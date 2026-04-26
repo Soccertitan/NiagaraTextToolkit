@@ -135,7 +135,7 @@ bool UNTTDataInterface::InitPerInstanceData(void* PerInstanceData, FNiagaraSyste
 	TArray<FVector2f> CharacterPositionsUnfiltered = GetCharacterPositions(CharacterSpriteSizes, VerticalOffsets, Kerning, VerticalOffset, KerningOffset, WhitespaceWidthMultiplier, InputText, HorizontalAlignment, VerticalAlignment, TotalTextHeight);
 	
 	TArray<int32> OutUnicode;
-	TArray<FVector2f> OutCharacterPositions;
+	TArray<FVector3f> OutCharacterPositions;
 	TArray<int32> OutLineStartIndices;
 	TArray<int32> OutLineCharacterCounts;
 	TArray<int32> OutWordStartIndices;
@@ -146,9 +146,24 @@ bool UNTTDataInterface::InitPerInstanceData(void* PerInstanceData, FNiagaraSyste
 		ProcessText(InputText, CharacterPositionsUnfiltered, bFilterWhitespaceCharacters, OutUnicode, OutCharacterPositions, OutLineStartIndices, OutLineCharacterCounts, OutWordStartIndices, OutWordCharacterCounts);
 	}
 
+	if (bAveragePosition && OutCharacterPositions.Num() > 0)
+	{
+		FVector3f Sum = FVector3f::ZeroVector;
+		for (const FVector3f& P : OutCharacterPositions)
+		{
+			Sum += P;
+		}
+		const FVector3f Average = Sum / (float)OutCharacterPositions.Num();
+		for (FVector3f& P : OutCharacterPositions)
+		{
+			P -= Average;
+		}
+	}
+
 	InstanceData->CharacterTextureUvs = MoveTemp(CharacterTextureUvs);
 	InstanceData->CharacterSpriteSizes = MoveTemp(CharacterSpriteSizes);
 	InstanceData->bFilterWhitespaceCharactersValue = bFilterWhitespaceCharacters;
+	InstanceData->bAveragePositionValue = bAveragePosition;
 	InstanceData->Unicode = MoveTemp(OutUnicode);
 	InstanceData->CharacterPositions = MoveTemp(OutCharacterPositions);
 	InstanceData->LineStartIndices = MoveTemp(OutLineStartIndices);
@@ -156,6 +171,23 @@ bool UNTTDataInterface::InitPerInstanceData(void* PerInstanceData, FNiagaraSyste
 	InstanceData->WordStartIndices = MoveTemp(OutWordStartIndices);
 	InstanceData->WordCharacterCounts = MoveTemp(OutWordCharacterCounts);
 	InstanceData->TotalTextHeight = TotalTextHeight;
+
+	// Push font data to render thread once on init (no per-tick update needed since
+	// data only changes when text/font changes, which triggers a full re-init).
+	FNDIFontUVInfoInstanceData* DataForRT = new FNDIFontUVInfoInstanceData(*InstanceData);
+	FNDIFontUVInfoProxy* RT_Proxy = GetFontProxy();
+	FNiagaraSystemInstanceID InstanceID = SystemInstance->GetId();
+
+	ENQUEUE_RENDER_COMMAND(InitNTTDIProxy)(
+		[RT_Proxy, DataForRT, InstanceID](FRHICommandListImmediate& RHICmdList)
+		{
+			if (RT_Proxy)
+			{
+				RT_Proxy->UpdateData_RT(DataForRT, InstanceID, RHICmdList);
+			}
+			delete DataForRT;
+		}
+	);
 
 	return true;
 }
@@ -458,7 +490,7 @@ void UNTTDataInterface::ProcessText(
 	const TArray<FVector2f>& CharacterPositionsUnfiltered,
 	const bool bFilterWhitespace,
 	TArray<int32>& OutUnicode,
-	TArray<FVector2f>& OutCharacterPositions,
+	TArray<FVector3f>& OutCharacterPositions,
 	TArray<int32>& OutLineStartIndices,
 	TArray<int32>& OutLineCharacterCounts,
 	TArray<int32>& OutWordStartIndices,
@@ -521,7 +553,9 @@ void UNTTDataInterface::ProcessText(
 
 			// Add to output
 			OutUnicode.Add(Code);
-			OutCharacterPositions.Add(CharacterPositionsUnfiltered[SourceIndex]);
+			// Convert from internal layout space (X=right, Y=down) to UE space (X=forward, Y=left, Z=up)
+			const FVector2f& P = CharacterPositionsUnfiltered[SourceIndex];
+			OutCharacterPositions.Add(FVector3f(0.0f, -P.X, -P.Y));
 		}
 
 		// End of logical line. Check if there is another line following (meaning we consumed a newline).
@@ -636,12 +670,12 @@ void UNTTDataInterface::GetFunctions(TArray<FNiagaraFunctionSignature>& OutFunct
 	FNiagaraFunctionSignature SigPosition;
 	SigPosition.Name = GetCharacterPositionName;
 #if WITH_EDITORONLY_DATA
-	SigPosition.Description = LOCTEXT("GetCharacterPositionDesc", "Returns the character position (Vector2) at CharacterIndex relative to the center of the text.");
+	SigPosition.Description = LOCTEXT("GetCharacterPositionDesc", "Returns the character position (Vector3) at CharacterIndex relative to the center of the text.");
 #endif
 	SigPosition.bMemberFunction = true;
 	SigPosition.AddInput(FNiagaraVariable(FNiagaraTypeDefinition(GetClass()), TEXT("Font UV Information interface")));
 	SigPosition.AddInput(FNiagaraVariable(FNiagaraTypeDefinition::GetIntDef(), TEXT("CharacterIndex")));
-	SigPosition.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetPositionDef(), TEXT("CharacterPosition")));
+	SigPosition.AddOutput(FNiagaraVariable(FNiagaraTypeDefinition::GetVec3Def(), TEXT("CharacterPosition")));
 	OutFunctions.Add(SigPosition);
 
 	// Register GetTextCharacterCount
@@ -843,6 +877,7 @@ bool UNTTDataInterface::CopyToInternal(UNiagaraDataInterface* Destination) const
 		DestTyped->KerningOffset = KerningOffset;
 		DestTyped->WhitespaceWidthMultiplier = WhitespaceWidthMultiplier;
 		DestTyped->bFilterWhitespaceCharacters = bFilterWhitespaceCharacters;
+		DestTyped->bAveragePosition = bAveragePosition;
 		return true;
 	}
 	else
@@ -863,7 +898,8 @@ bool UNTTDataInterface::Equals(const UNiagaraDataInterface* Other) const
 		&& OtherTyped->VerticalOffset == VerticalOffset
 		&& OtherTyped->KerningOffset == KerningOffset
 		&& OtherTyped->WhitespaceWidthMultiplier == WhitespaceWidthMultiplier
-		&& OtherTyped->bFilterWhitespaceCharacters == bFilterWhitespaceCharacters;
+		&& OtherTyped->bFilterWhitespaceCharacters == bFilterWhitespaceCharacters
+		&& OtherTyped->bAveragePosition == bAveragePosition;
 		UE_LOG(LogNiagaraTextToolkit, Verbose, TEXT("NTT DI: Equals - ThisAsset=%s OtherAsset=%s Result=%s"),
 		*GetNameSafe(FontAsset),
 		OtherTyped ? *GetNameSafe(OtherTyped->FontAsset) : TEXT("nullptr"),
@@ -1010,7 +1046,7 @@ void UNTTDataInterface::GetCharacterPositionVM(FVectorVMExternalFunctionContext&
 	FNDIInputParam<int32> InCharacterIndex(Context);
 	FNDIOutputParam<FVector3f> OutPosition(Context);
 
-	const TArray<FVector2f>& Positions = InstData.Get()->CharacterPositions;
+	const TArray<FVector3f>& Positions = InstData.Get()->CharacterPositions;
 	const int32 NumChars = InstData.Get()->Unicode.Num();
 
 	for (int32 i = 0; i < Context.GetNumInstances(); ++i)
@@ -1024,15 +1060,10 @@ void UNTTDataInterface::GetCharacterPositionVM(FVectorVMExternalFunctionContext&
 		}
 
 		Index = Index % NumChars;
-		const FVector2f Position2 = Positions.IsValidIndex(Index) ? Positions[Index] : FVector2f(0.0f, 0.0f);
-
-		// UE Coordinates: X (forward) = 0, Y (left/right) = horizontal, Z (up/down) = vertical
-		// The position is calculated by adding the cumulative character widths and line heights (positive values)
-		// This causes the vertical component to go in the positive direction, but the final Z value should be negative
-		// for subsequent lines. Similarly the horizontal component goes in the positive direction, but positive Y
-		// in UE's cooridnate system is left, and we need the text to go right.
-		// So, we flip both values
-		OutPosition.SetAndAdvance(FVector3f(0.0f, -Position2.X, -Position2.Y));
+		// Positions are already stored in UE coordinate space (X=forward, Y=left, Z=up).
+		// The conversion from internal layout space (X=right, Y=down) happened at ProcessText time.
+		const FVector3f Position3 = Positions.IsValidIndex(Index) ? Positions[Index] : FVector3f(0.0f, 0.0f, 0.0f);
+		OutPosition.SetAndAdvance(Position3);
 	}
 }
 

@@ -30,6 +30,7 @@ public class NiagaraTextToolkitEditor : ModuleRules
 				"AssetRegistry",
 				"ContentBrowser",
 				"Projects",
+				"PropertyEditor",
 			}
 		);
 	}

@@ -38,13 +38,14 @@ struct FNDIFontUVInfoInstanceData
 	// Per-glyph sprite size in pixels: (Width, Height)
 	TArray<FVector2f> CharacterSpriteSizes;
 	TArray<int32> Unicode;
-	TArray<FVector2f> CharacterPositions;
+	TArray<FVector3f> CharacterPositions;
 	TArray<int32> LineStartIndices;
 	TArray<int32> LineCharacterCounts;
 	TArray<int32> WordStartIndices;
 	TArray<int32> WordCharacterCounts;
 	float TotalTextHeight = 0.0f;
 	bool bFilterWhitespaceCharactersValue = true;
+	bool bAveragePositionValue = false;
 };
 
 // This proxy is used to safely copy data between game thread and render thread
@@ -52,7 +53,7 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 {
 	// We manage render-thread buffers explicitly via InitPerInstanceData/UpdateData_RT,
 	// so we don't need Niagara's per-frame GT->RT instance data path.
-	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return sizeof(FNDIFontUVInfoInstanceData); }
+	virtual int32 PerInstanceDataPassedToRenderThreadSize() const override { return 0; }
 
 	virtual ~FNDIFontUVInfoProxy() override
 	{
@@ -159,7 +160,7 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 		CurrentOffset += NumChars * 1;
 
 		RTInstance.Offset_Positions = CurrentOffset;
-		CurrentOffset += NumChars * 2;
+		CurrentOffset += NumChars * 3;
 
 		RTInstance.Offset_LineStart = CurrentOffset;
 		CurrentOffset += NumLines * 1;
@@ -215,13 +216,14 @@ struct FNDIFontUVInfoProxy : public FNiagaraDataInterfaceProxy
 				FMemory::Memcpy(&DestInfo[Base], &Src, sizeof(int32));
 			}
 
-			// Positions (float2)
+			// Positions (float3, UE coordinate space: X=forward, Y=left, Z=up)
 			for (int32 i = 0; i < NumChars; ++i)
 			{
-				const FVector2f& Src = InstanceDataFromGT->CharacterPositions[i];
-				int32 Base = RTInstance.Offset_Positions + i * 2;
+				const FVector3f& Src = InstanceDataFromGT->CharacterPositions[i];
+				int32 Base = RTInstance.Offset_Positions + i * 3;
 				DestInfo[Base + 0] = Src.X;
 				DestInfo[Base + 1] = Src.Y;
+				DestInfo[Base + 2] = Src.Z;
 			}
 
 			// LineStartIndices (int32)
@@ -310,10 +312,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "Input Text", MultiLine = "true"))
 	FString InputText;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta = (DisplayName = "Horizontal Alignment"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "Horizontal Alignment"))
 	ENTTTextHorizontalAlignment HorizontalAlignment = ENTTTextHorizontalAlignment::NTT_THA_Center;
 
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta = (DisplayName = "Vertical Alignment"))
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, meta = (DisplayName = "Vertical Alignment"))
 	ENTTTextVerticalAlignment VerticalAlignment = ENTTTextVerticalAlignment::NTT_TVA_Center;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta = (DisplayName = "Vertical Offset"))
@@ -327,6 +329,9 @@ public:
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta = (DisplayName = "Filter Whitespace Characters"))
 	bool bFilterWhitespaceCharacters = true;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, AdvancedDisplay, meta = (DisplayName = "Average Position"))
+	bool bAveragePosition = false;
 
 	//UObject Interface
 	virtual void PostInitProperties() override;
@@ -394,7 +399,7 @@ private:
 		const TArray<FVector2f>& CharacterPositionsUnfiltered,
 		const bool bFilterWhitespace,
 		TArray<int32>& OutUnicode,
-		TArray<FVector2f>& OutCharacterPositions,
+		TArray<FVector3f>& OutCharacterPositions,
 		TArray<int32>& OutLineStartIndices,
 		TArray<int32>& OutLineCharacterCounts,
 		TArray<int32>& OutWordStartIndices,

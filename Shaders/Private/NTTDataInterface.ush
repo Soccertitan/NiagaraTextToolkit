@@ -51,8 +51,9 @@ void GetCharacterUV_{ParameterName}(in int In_CharacterIndex, out float Out_USiz
 	}
 }
 
-// Returns the character position (Position/float3) at In_CharacterIndex relative to the center of the text
-// Coordinate mapping: X(forward)=0, Y(left/right)=horizontal, Z(up/down)=vertical
+// Returns the character position (Position/float3) at In_CharacterIndex relative to the center of the text.
+// Positions are stored in UE coordinate space (X=forward, Y=left, Z=up). The conversion from internal
+// layout space (X=right, Y=down) happened at ProcessText time on the CPU.
 void GetCharacterPosition_{ParameterName}(in int In_CharacterIndex, out float3 Out_CharacterPosition)
 {
 	if ({ParameterName}_NumChars == 0)
@@ -63,12 +64,12 @@ void GetCharacterPosition_{ParameterName}(in int In_CharacterIndex, out float3 O
 
 	int idx = In_CharacterIndex % int({ParameterName}_NumChars);
 
-	int Base = {ParameterName}_Offset_Positions + idx * 2;
-	float px = {ParameterName}_PackedBuffer[Base + 0];
-	float py = {ParameterName}_PackedBuffer[Base + 1];
-
-	// see UNTTDataInterface::GetCharacterPositionVM for info on why these are flipped
-	Out_CharacterPosition = float3(0.0f, -px, -py);
+	int Base = {ParameterName}_Offset_Positions + idx * 3;
+	Out_CharacterPosition = float3(
+		{ParameterName}_PackedBuffer[Base + 0],
+		{ParameterName}_PackedBuffer[Base + 1],
+		{ParameterName}_PackedBuffer[Base + 2]
+	);
 }
 
 // Returns the sprite size in pixels (Width, Height) for the given character index

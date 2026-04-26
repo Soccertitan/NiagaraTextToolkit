@@ -3,6 +3,10 @@
 #include "NiagaraTextToolkitEditor.h"
 #include "NiagaraSettings.h"
 #include "Misc/Paths.h"
+#include "PropertyEditorModule.h"
+#include "Modules/ModuleManager.h"
+#include "Customizations/NTTHorizontalAlignmentCustomization.h"
+#include "Customizations/NTTVerticalAlignmentCustomization.h"
 
 #define LOCTEXT_NAMESPACE "FNiagaraTextToolkitEditorModule"
 
@@ -21,11 +25,25 @@ void FNiagaraTextToolkitEditorModule::StartupModule()
 			NiagaraSettings->SaveConfig();
 		}
 	}
+
+	FPropertyEditorModule& PropertyModule = FModuleManager::LoadModuleChecked<FPropertyEditorModule>("PropertyEditor");
+	PropertyModule.RegisterCustomPropertyTypeLayout(
+		TEXT("ENTTTextHorizontalAlignment"),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNTTHorizontalAlignmentCustomization::MakeInstance));
+	PropertyModule.RegisterCustomPropertyTypeLayout(
+		TEXT("ENTTTextVerticalAlignment"),
+		FOnGetPropertyTypeCustomizationInstance::CreateStatic(&FNTTVerticalAlignmentCustomization::MakeInstance));
+	PropertyModule.NotifyCustomizationModuleChanged();
 }
 
 void FNiagaraTextToolkitEditorModule::ShutdownModule()
 {
-	// Editor-only shutdown logic for NiagaraTextToolkit can be added here
+	if (FModuleManager::Get().IsModuleLoaded("PropertyEditor"))
+	{
+		FPropertyEditorModule& PropertyModule = FModuleManager::GetModuleChecked<FPropertyEditorModule>("PropertyEditor");
+		PropertyModule.UnregisterCustomPropertyTypeLayout(TEXT("ENTTTextHorizontalAlignment"));
+		PropertyModule.UnregisterCustomPropertyTypeLayout(TEXT("ENTTTextVerticalAlignment"));
+	}
 }
 
 #undef LOCTEXT_NAMESPACE
